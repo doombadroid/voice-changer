@@ -34,6 +34,9 @@ struct Args {
     /// write ORT profiling json with this prefix
     #[arg(long)]
     profile: Option<String>,
+    /// truncate inputs to this many seconds of audio (default: full 1s)
+    #[arg(long)]
+    seconds: Option<f32>,
 }
 
 fn npz_f32(npz: &mut NpzReader<File>, key: &str) -> Result<ArrayD<f32>> {
@@ -139,6 +142,27 @@ fn main() -> Result<()> {
     let mel_fcpe = npz_f32(&mut npz, "mel_fcpe")?;
     let latent_fcpe_g = npz_f32(&mut npz, "latent_fcpe")?;
 
+    // optional truncation for block-scale latency probing (correctness gates
+    // only apply at full length; truncated runs print timing only)
+    let frac = args.seconds.map(|s| (s / 1.0).clamp(0.05, 1.0));
+    let truncated = frac.is_some();
+    let (audio, feats_g, pitch, pitchf, rnd, nsf_noise, mel_fcpe) = if let Some(fr) = frac {
+        let t_feats = ((feats_g.shape()[1] as f32) * fr) as usize;
+        let n_audio = ((audio.shape()[1] as f32) * fr) as usize;
+        let t_mel = ((mel_fcpe.shape()[1] as f32) * fr) as usize;
+        (
+            audio.slice(ndarray::s![.., ..n_audio]).to_owned().into_dyn(),
+            feats_g.slice(ndarray::s![.., ..t_feats, ..]).to_owned().into_dyn(),
+            pitch.slice(ndarray::s![.., ..t_feats]).to_owned().into_dyn(),
+            pitchf.slice(ndarray::s![.., ..t_feats]).to_owned().into_dyn(),
+            rnd.slice(ndarray::s![.., .., ..t_feats]).to_owned().into_dyn(),
+            nsf_noise.slice(ndarray::s![.., ..t_feats * 400, ..]).to_owned().into_dyn(),
+            mel_fcpe.slice(ndarray::s![.., ..t_mel, ..]).to_owned().into_dyn(),
+        )
+    } else {
+        (audio, feats_g, pitch, pitchf, rnd, nsf_noise, mel_fcpe)
+    };
+
     let mut chain_p50 = 0.0f64;
 
     // --- ContentVec ---
@@ -152,7 +176,7 @@ fn main() -> Result<()> {
         Ok(data.to_vec())
     })?;
     let _ = t0;
-    println!("{:12} RMSE {:.3e}   (gate 1e-4)", "contentvec", rmse(&out, feats_g.as_slice().unwrap()));
+    if !truncated { println!("{:12} RMSE {:.3e}   (gate 1e-4)", "contentvec", rmse(&out, feats_g.as_slice().unwrap())); }
 
     // --- RMVPE ---
     let mut rm = build_session(&args, &format!("{}/rmvpe_20231006.onnx", args.golden))?;
@@ -165,7 +189,7 @@ fn main() -> Result<()> {
         let (_, data) = o["pitchf"].try_extract_tensor::<f32>().map_err(oe)?;
         Ok(data.to_vec())
     })?;
-    println!("{:12} median cents err {:.2}   (gate 5)", "rmvpe", cents_err(&out, f0_g.as_slice().unwrap()));
+    if !truncated { println!("{:12} median cents err {:.2}   (gate 5)", "rmvpe", cents_err(&out, f0_g.as_slice().unwrap())); }
 
     // --- fcpe ---
     let fcpe_path = format!("{}/fcpe_fp32.onnx", args.golden);
@@ -176,7 +200,7 @@ fn main() -> Result<()> {
             let (_, data) = o["latent"].try_extract_tensor::<f32>().map_err(oe)?;
             Ok(data.to_vec())
         })?;
-        println!("{:12} latent RMSE {:.3e}   (gate 1e-4)", "fcpe", rmse(&out, latent_fcpe_g.as_slice().unwrap()));
+        if !truncated { println!("{:12} latent RMSE {:.3e}   (gate 1e-4)", "fcpe", rmse(&out, latent_fcpe_g.as_slice().unwrap())); }
     }
 
     // --- Synthesizer ---
@@ -198,7 +222,7 @@ fn main() -> Result<()> {
         let (_, data) = o["audio"].try_extract_tensor::<f32>().map_err(oe)?;
         Ok(data.to_vec())
     })?;
-    println!("{:12} RMSE {:.3e}   (gate 1e-3)", "synth", rmse(&out, audio_out_g.as_slice().unwrap()));
+    if !truncated { println!("{:12} RMSE {:.3e}   (gate 1e-3)", "synth", rmse(&out, audio_out_g.as_slice().unwrap())); }
 
     let _ = &mut chain_p50;
     println!("done");

@@ -5,7 +5,12 @@ fp32, no remove_weight_norm, dynamic T axis) except torch.randn_like is replaced
 by a graph input `rnd` (scale 0.66666 stays inside the graph, matching this
 tree's runtime semantics).
 
-Run: server/.venv/bin/python native/tools/export_synth_onnx.py <model.pth> <out.onnx>
+Run: server/.venv/bin/python native/tools/export_synth_onnx.py <model.pth> <out.onnx> [--static T]
+
+--static T: fixed-shape export at T feature frames (no dynamic axes) + onnxsim
+constant-folding — needed by burn-onnx (runtime pads unsupported) and by ORT
+graph capture. Realtime uses fixed block sizes, so static graphs are the
+production shape anyway.
 """
 import json
 import sys
@@ -72,15 +77,22 @@ class SynthesizerDeterministic(SynthesizerTrnMs768NSFsid_ONNX):
 
 def main() -> None:
     pth_path, out_path = sys.argv[1], sys.argv[2]
+    static_t = None
+    if "--static" in sys.argv:
+        static_t = int(sys.argv[sys.argv.index("--static") + 1])
     rvc_models.SineGen.forward = det_sinegen_forward
     cpt = torch.load(pth_path, map_location="cpu", weights_only=False)
     sr = cpt["config"][-1]
     net = SynthesizerDeterministic(*cpt["config"], is_half=False)
     net.eval()
     net.load_state_dict(cpt["weight"], strict=False)
+    # fold weight_norm into plain weights (initializers, not runtime ops);
+    # the ONNX wrapper class lacks the aggregate method, fold per component
+    net.dec.remove_weight_norm()
+    net.flow.remove_weight_norm()
     assert net.dec.m_source.l_sin_gen.dim == 1, "harmonic_num != 0: rand_ini zeroing no longer exact"
 
-    T = 64
+    T = static_t if static_t is not None else 64
     inter_channels = cpt["config"][2]
     upp = int(np.prod(cpt["config"][12]))  # upsample_rates product (e.g. 400 for 40k)
     feats = torch.randn(1, T, 768)
@@ -91,17 +103,25 @@ def main() -> None:
     rnd = torch.randn(1, inter_channels, T)
     nsf_noise = torch.randn(1, T * upp, 1)
 
+    dyn_axes = None if static_t is not None else {"feats": [1], "pitch": [1], "pitchf": [1], "rnd": [2], "nsf_noise": [1]}
     torch.onnx.export(
         net,
         (feats, p_len, pitch, pitchf, sid, rnd, nsf_noise),
         out_path,
-        dynamic_axes={"feats": [1], "pitch": [1], "pitchf": [1], "rnd": [2], "nsf_noise": [1]},
-        do_constant_folding=False,
+        dynamic_axes=dyn_axes,
+        do_constant_folding=static_t is not None,
         opset_version=17,
         dynamo=False,
         input_names=["feats", "p_len", "pitch", "pitchf", "sid", "rnd", "nsf_noise"],
         output_names=["audio"],
     )
+    if static_t is not None:
+        import onnx
+        from onnxsim import simplify
+
+        m, ok = simplify(onnx.load(out_path))
+        assert ok, "onnxsim failed"
+        onnx.save(m, out_path)
 
     import onnxruntime as ort_rt
 

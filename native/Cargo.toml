@@ -1,5 +1,5 @@
 [workspace]
-members = ["spike-ort"]
+members = ["spike-ort", "spike-burn"]
 resolver = "2"
 
 [workspace.package]
