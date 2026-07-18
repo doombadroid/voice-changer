@@ -111,11 +111,13 @@ pub fn node_id(name: &str) -> Option<u32> {
     None
 }
 
-/// Pick the first real hardware capture (alsa_input.*) - avoids virtual
+/// Pick a real hardware capture (alsa_input.*), preferring USB mics over
+/// onboard analog (the onboard jack picks up nothing useful). Avoids virtual
 /// sources like the python client's VC_Mic being the system default.
 pub fn pick_hw_source() -> Option<String> {
     let out = Command::new("pw-dump").output().ok()?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let mut first: Option<String> = None;
     for o in v.as_array()? {
         let props = match o.get("info").and_then(|i| i.get("props")) {
             Some(p) => p,
@@ -124,8 +126,13 @@ pub fn pick_hw_source() -> Option<String> {
         let class = props.get("media.class").and_then(|c| c.as_str()).unwrap_or("");
         let name = props.get("node.name").and_then(|c| c.as_str()).unwrap_or("");
         if class == "Audio/Source" && name.starts_with("alsa_input.") {
-            return Some(name.to_string());
+            if name.contains("usb") {
+                return Some(name.to_string());
+            }
+            if first.is_none() {
+                first = Some(name.to_string());
+            }
         }
     }
-    None
+    first
 }

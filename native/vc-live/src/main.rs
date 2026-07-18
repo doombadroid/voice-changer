@@ -45,6 +45,9 @@ struct Args {
     /// replace mic input with a 1 kHz tone burst every 2 s (latency/path test)
     #[arg(long, default_value_t = false)]
     tone: bool,
+    /// dump the worker's 16k input to this wav file (diagnosis)
+    #[arg(long)]
+    dump_input: Option<String>,
 }
 
 /// Find the repo root (dir containing server/pretrain + native/) from cwd or
@@ -165,7 +168,9 @@ fn main() -> Result<()> {
     let block = args.block;
     let passthrough = args.passthrough;
     let tone = args.tone;
+    let dump_path = args.dump_input.clone();
     std::thread::spawn(move || {
+        let mut dump: Vec<f32> = Vec::new();
         let mut engine_stream = engine_stream;
         eprintln!("worker up ({})", if passthrough { "passthrough" } else { "engine" });
 
@@ -202,6 +207,15 @@ fn main() -> Result<()> {
             }
             total_in += block as u64;
             in_rms_acc += inbuf.iter().map(|v| v * v).sum::<f32>();
+            if dump_path.is_some() && dump.len() < 16000 * 30 {
+                dump.extend_from_slice(&inbuf);
+                if dump.len() >= 16000 * 30 {
+                    if let Some(dp) = &dump_path {
+                        write_wav16(dp, &dump);
+                        eprintln!("DUMPED 30s input to {dp}");
+                    }
+                }
+            }
             let t0 = std::time::Instant::now();
             let out: Vec<f32> = if let Some(se) = engine_stream.as_mut() {
                 match se.push(&inbuf) {
@@ -289,4 +303,25 @@ fn main() -> Result<()> {
     mainloop.run();
     unsafe { pipewire::deinit() };
     Ok(())
+}
+
+fn write_wav16(path: &str, samples: &[f32]) {
+    let mut bytes: Vec<u8> = Vec::with_capacity(44 + samples.len() * 2);
+    let data_len = (samples.len() * 2) as u32;
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&16000u32.to_le_bytes());
+    bytes.extend_from_slice(&32000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        bytes.extend_from_slice(&(((s.clamp(-1.0, 1.0)) * 32767.0) as i16).to_le_bytes());
+    }
+    let _ = std::fs::write(path, bytes);
 }

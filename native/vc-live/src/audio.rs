@@ -48,6 +48,16 @@ pub fn capture_stream<'a>(
     let stream = pw::stream::StreamBox::new(core, "vc-live-capture", props)?;
     let _listener = stream
         .add_local_listener_with_user_data(())
+        .param_changed(|_, _, id, param| {
+            if id == spa::param::ParamType::Format.as_raw() {
+                if let Some(param) = param {
+                    let mut info = spa::param::audio::AudioInfoRaw::new();
+                    if info.parse(param).is_ok() {
+                        eprintln!("CAPTURE FORMAT: rate {} ch {}", info.rate(), info.channels());
+                    }
+                }
+            }
+        })
         .process(move |stream, _| {
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
@@ -107,6 +117,16 @@ pub fn playback_stream<'a>(
     let stream = pw::stream::StreamBox::new(core, "vc-live-out", props)?;
     let _listener = stream
         .add_local_listener_with_user_data(())
+        .param_changed(|_, _, id, param| {
+            if id == spa::param::ParamType::Format.as_raw() {
+                if let Some(param) = param {
+                    let mut info = spa::param::audio::AudioInfoRaw::new();
+                    if info.parse(param).is_ok() {
+                        eprintln!("PLAYBACK FORMAT: rate {} ch {}", info.rate(), info.channels());
+                    }
+                }
+            }
+        })
         .process(move |stream, _| {
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
