@@ -65,6 +65,11 @@ impl StreamEngine {
         &self.cfg
     }
 
+    /// Live pitch update (applies from the next hop).
+    pub fn set_pitch(&mut self, semitones: i32) {
+        self.cfg.pitch_semitones = semitones;
+    }
+
     /// Push exactly cfg.block new 16 kHz samples. Returns a stitched 40 kHz
     /// block (len = block * 2.5) once warm; None on the first (warmup) hop.
     pub fn push(&mut self, block: &[f32]) -> Result<Option<Vec<f32>>> {
