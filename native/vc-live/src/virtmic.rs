@@ -74,3 +74,56 @@ pub fn install_guards() {
         std::process::exit(130);
     });
 }
+
+/// Query pw-dump for a node's object.serial by exact node.name.
+pub fn node_serial(name: &str) -> Option<String> {
+    let out = Command::new("pw-dump").output().ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    for o in v.as_array()? {
+        let props = match o.get("info").and_then(|i| i.get("props")) {
+            Some(p) => p,
+            None => continue,
+        };
+        if props.get("node.name").and_then(|n| n.as_str()) == Some(name) {
+            if let Some(serial) = props.get("object.serial") {
+                return Some(serial.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Query pw-dump for a node's numeric id by exact node.name.
+pub fn node_id(name: &str) -> Option<u32> {
+    let out = Command::new("pw-dump").output().ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    for o in v.as_array()? {
+        let props = match o.get("info").and_then(|i| i.get("props")) {
+            Some(p) => p,
+            None => continue,
+        };
+        if props.get("node.name").and_then(|n| n.as_str()) == Some(name) {
+            return o.get("id").and_then(|i| i.as_u64()).map(|i| i as u32);
+        }
+    }
+    None
+}
+
+/// Pick the first real hardware capture (alsa_input.*) - avoids virtual
+/// sources like the python client's VC_Mic being the system default.
+pub fn pick_hw_source() -> Option<String> {
+    let out = Command::new("pw-dump").output().ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    for o in v.as_array()? {
+        let props = match o.get("info").and_then(|i| i.get("props")) {
+            Some(p) => p,
+            None => continue,
+        };
+        let class = props.get("media.class").and_then(|c| c.as_str()).unwrap_or("");
+        let name = props.get("node.name").and_then(|c| c.as_str()).unwrap_or("");
+        if class == "Audio/Source" && name.starts_with("alsa_input.") {
+            return Some(name.to_string());
+        }
+    }
+    None
+}

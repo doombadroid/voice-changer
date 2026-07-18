@@ -7864,6 +7864,7 @@ dependencies = [
  "ctrlc",
  "pipewire",
  "rtrb",
+ "serde_json",
  "vc-core",
 ]
 
