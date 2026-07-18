@@ -79,22 +79,19 @@ sides, lookahead trimmed; target operating point 64 ms.
 <100 ms.** Block floor is bounded by HuBERT's 20 ms frame stride. Gate:
 inference time < block time at the 64 ms operating point on gfx1151.
 
-## GPU runtime — spike decides (M0, timeboxed ~1 week)
+## GPU runtime — DECIDED (M0 complete, 2026-07-17)
 
-Bench all four candidates on gfx1151 + CPU with the same exported graphs (or
-closest proxy):
+See `2026-07-17-m0-decision.md` for measured tables. Outcome:
 
-| Candidate | Key risk to verify |
-|---|---|
-| ncnn (Vulkan) | pnnx conversion of attention + BiGRU (RMVPE landmine op) |
-| ONNX Runtime WebGPU EP (Dawn→Vulkan) | EP maturity; ops silently falling back to CPU |
-| burn (wgpu→Vulkan, pure Rust) | op coverage (GRU/conv-transpose), kernel perf |
-| ggml Vulkan (hand-port) | effort — weeks not days; bench attention+conv proxies only |
-
-Decision matrix, in priority order: **(1) full-pipeline latency on RADV**,
-(2) op coverage with no silent CPU fallback, (3) binary size, (4) effort.
-If RMVPE's BiGRU blocks an otherwise-winning runtime, default pitch estimator
-becomes fcpe (transformer, no GRU) and RMVPE ships later or CPU-side.
+- **Runtime: ONNX Runtime via `ort` crate. Language: Rust.**
+- **Default EP: CPU** (wins every net at realtime window sizes on gfx1151;
+  ~60 ms chain compute at 0.25 s window). **WebGPU EP = experimental GPU
+  toggle** — the vendor-neutral Vulkan path, currently dispatch-overhead-bound,
+  revisited each ORT release.
+- **Pitch default: fcpe** (5–7× cheaper than RMVPE, no GRU, GPU-capable);
+  RMVPE = quality-mode toggle, CPU-pinned (its GRU/STFT partition thrashes GPU).
+- ncnn and ggml paper-eliminated (missing Vulkan 1D-deconv/GRU ops; port cost).
+  burn on watch-list: codegen correct, wgpu backend numerically broken in 0.21.
 
 ## Latency engineering (AMD-first)
 
