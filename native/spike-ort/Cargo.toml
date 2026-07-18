@@ -9,3 +9,4 @@ ndarray = "0.17"
 ndarray-npy = "0.10"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

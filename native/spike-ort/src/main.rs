@@ -31,6 +31,9 @@ struct Args {
     /// override contentvec model path (e.g. fp16 variant)
     #[arg(long)]
     contentvec_override: Option<String>,
+    /// write ORT profiling json with this prefix
+    #[arg(long)]
+    profile: Option<String>,
 }
 
 fn npz_f32(npz: &mut NpzReader<File>, key: &str) -> Result<ArrayD<f32>> {
@@ -99,6 +102,12 @@ fn oe(e: ort::Error) -> anyhow::Error {
 
 fn build_session(args: &Args, path: &str) -> Result<Session> {
     let b = Session::builder().map_err(oe)?;
+    let b = if let Some(prefix) = &args.profile {
+        let stem = std::path::Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
+        b.with_profiling(format!("{prefix}_{stem}")).map_err(|e| anyhow::anyhow!("{e}"))?
+    } else {
+        b
+    };
     let mut b = match args.ep.as_str() {
         "webgpu" => {
             let ep = ort::ep::webgpu::WebGPU::default()
@@ -113,6 +122,7 @@ fn build_session(args: &Args, path: &str) -> Result<Session> {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_writer(std::io::stderr).init();
     let args = Args::parse();
     println!("== spike-ort  ep={}  graph_capture={}  ({}) ==", args.ep, args.graph_capture, ort::info());
     let bench = Bench { iters: args.iters, warmup: args.warmup };
