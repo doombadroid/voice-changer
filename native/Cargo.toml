@@ -1,5 +1,5 @@
 [workspace]
-members = ["spike-ort", "spike-burn", "vc-core", "vc-cli"]
+members = ["spike-ort", "spike-burn", "vc-core", "vc-cli", "vc-live"]
 resolver = "2"
 
 [workspace.package]

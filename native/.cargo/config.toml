@@ -2,3 +2,9 @@
 # look there without LD_LIBRARY_PATH.
 [build]
 rustflags = ["-C", "link-args=-Wl,-rpath,$ORIGIN"]
+
+# bindgen (libspa-sys) needs libclang; the only one on this box ships inside
+# the ROCm SDK in the oracle venv. Box-specific paths - revisit for CI/AppImage.
+[env]
+LIBCLANG_PATH = "/home/timb/voice-changer/server/.venv/lib/python3.11/site-packages/_rocm_sdk_core/lib/llvm/lib"
+BINDGEN_EXTRA_CLANG_ARGS = "-I/home/timb/voice-changer/server/.venv/lib/python3.11/site-packages/_rocm_sdk_core/lib/llvm/lib/clang/23/include"
