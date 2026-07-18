@@ -1,0 +1,4 @@
+# libwebgpu_dawn.so (ort webgpu EP) lands next to the binary; make the loader
+# look there without LD_LIBRARY_PATH.
+[build]
+rustflags = ["-C", "link-args=-Wl,-rpath,$ORIGIN"]

@@ -66,13 +66,46 @@ def main() -> None:
         cents = m.model.latent2cents_local_decoder(torch.from_numpy(latent), threshold=0.006)
         f0_fcpe = m.model.cent_to_f0(cents).numpy().ravel().astype(np.float32)
 
+    # --- chain v2: full RVC fidelity (feats 2x nearest-upsample, pitch @100fps
+    # trimmed tail to feats len — mirrors Pipeline.py:211,225) ---
+    feats_up = np.repeat(feats, 2, axis=1)  # [1, 2T, 768] nearest x2
+    Tu = feats_up.shape[1]
+    f0_100 = f0[-Tu:] if len(f0) >= Tu else np.pad(f0, (Tu - len(f0), 0))
+    f0_mel2 = 1127 * np.log(1 + f0_100 / 700)
+    coarse2 = np.clip((f0_mel2 - mel_min) * 254 / (mel_max - mel_min) + 1, 1, 255)
+    coarse2 = np.rint(np.where(f0_100 > 0, coarse2, 1)).astype(np.int64)[None, :]
+    pitchf2 = f0_100.astype(np.float32)[None, :]
+    rnd2 = rs.randn(1, meta["inter_channels"], Tu).astype(np.float32)
+    noise2 = rs.randn(1, Tu * meta["upp"], 1).astype(np.float32)
+    audio_out_v2 = syn.run(None, {
+        "feats": feats_up.astype(np.float32), "p_len": np.array([Tu], dtype=np.int64),
+        "pitch": coarse2, "pitchf": pitchf2, "sid": np.array([0], dtype=np.int64),
+        "rnd": rnd2, "nsf_noise": noise2,
+    })[0]
+
+    # --- chain v2-fcpe: same as v2 but pitch from fcpe (what the rust engine uses) ---
+    f0f_100 = f0_fcpe[-Tu:] if len(f0_fcpe) >= Tu else np.pad(f0_fcpe, (Tu - len(f0_fcpe), 0))
+    f0f_mel = 1127 * np.log(1 + f0f_100 / 700)
+    coarse2f = np.clip((f0f_mel - mel_min) * 254 / (mel_max - mel_min) + 1, 1, 255)
+    coarse2f = np.rint(np.where(f0f_100 > 0, coarse2f, 1)).astype(np.int64)[None, :]
+    pitchf2f = f0f_100.astype(np.float32)[None, :]
+    audio_out_v2f = syn.run(None, {
+        "feats": feats_up.astype(np.float32), "p_len": np.array([Tu], dtype=np.int64),
+        "pitch": coarse2f, "pitchf": pitchf2f, "sid": np.array([0], dtype=np.int64),
+        "rnd": rnd2, "nsf_noise": noise2,
+    })[0]
+
     np.savez(
         "native/golden/golden.npz",
         audio_16k=audio, feats=feats, f0_rmvpe=f0, pitch_coarse=coarse, pitchf=pitchf,
         rnd=rnd, nsf_noise=nsf_noise, audio_out=audio_out.astype(np.float32),
         mel_fcpe=mel.numpy().astype(np.float32), latent_fcpe=latent, f0_fcpe=f0_fcpe,
+        feats_up=feats_up.astype(np.float32), pitch_coarse_v2=coarse2, pitchf_v2=pitchf2,
+        rnd_v2=rnd2, nsf_noise_v2=noise2, audio_out_v2=audio_out_v2.astype(np.float32),
+        audio_out_v2fcpe=audio_out_v2f.astype(np.float32),
     )
     sf.write("native/golden/golden_out.wav", np.asarray(audio_out).ravel(), 40000)
+    sf.write("native/golden/golden_out_v2.wav", np.asarray(audio_out_v2).ravel(), 40000)
     voiced = f0[f0 > 0]
     print(json.dumps({
         "feats": list(feats.shape), "f0_frames": len(f0), "f0_voiced": int(len(voiced)),
