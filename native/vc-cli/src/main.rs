@@ -17,12 +17,19 @@ struct Args {
     /// single-pass whole-file conversion (no chunking)
     #[arg(long, default_value_t = false)]
     single_pass: bool,
-    /// chunk block size in 16k samples (multiple of 320)
-    #[arg(long, default_value_t = 2560)]
+    /// realtime-preview mode: small window (block 160ms, ctx 260ms) matching
+    /// the M2 live target - hear what realtime will sound like
+    #[arg(long, default_value_t = false)]
+    realtime: bool,
+    /// chunk block size in 16k samples (multiple of 320); default 1.5s offline
+    #[arg(long, default_value_t = 24000)]
     block: usize,
-    /// left context in 16k samples (multiple of 320)
-    #[arg(long, default_value_t = 4160)]
+    /// left context in 16k samples (multiple of 320); default 1.5s offline
+    #[arg(long, default_value_t = 24000)]
     ctx_left: usize,
+    /// extra right context/lookahead in 16k samples (multiple of 320); default ~1.4s offline
+    #[arg(long, default_value_t = 22400)]
+    lookahead: usize,
     /// print per-hop stage timings
     #[arg(long, default_value_t = false)]
     bench: bool,
@@ -110,9 +117,12 @@ fn main() -> Result<()> {
         out
     } else {
         let _ = &mut rng;
+        let (blk, ctx, la) =
+            if args.realtime { (2560, 4160, 0) } else { (args.block, args.ctx_left, args.lookahead) };
         let scfg = StreamCfg {
-            block: args.block,
-            ctx_left: args.ctx_left,
+            block: blk,
+            ctx_left: ctx,
+            lookahead: la,
             pitch_semitones: args.pitch,
             seed: args.seed,
             ..Default::default()

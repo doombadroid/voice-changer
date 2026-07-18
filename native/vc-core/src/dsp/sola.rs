@@ -29,20 +29,24 @@ impl Sola {
     }
 
     /// tail: newest converted audio laid out as [block | crossfade | search].
-    /// Returns the stitched block (len = tail.len() - crossfade - search), or
-    /// None on the warmup call (buffer primed, nothing emitted).
+    /// Returns the stitched block (len = tail.len() - crossfade - search).
+    /// The first call emits the block unblended (nominal-center anchor) so no
+    /// audio is dropped at stream start.
     pub fn process(&mut self, tail: &[f32]) -> Option<Vec<f32>> {
         let block = tail.len() - self.crossfade - self.search;
         match &self.buf {
             None => {
+                let off = self.search / 2;
+                let out = tail[off..off + block].to_vec();
+                let start = off + block;
                 self.buf = Some(
-                    tail[tail.len() - self.crossfade..]
+                    tail[start..start + self.crossfade]
                         .iter()
                         .zip(&self.prev_strength)
                         .map(|(a, s)| a * s)
                         .collect(),
                 );
-                None
+                Some(out)
             }
             Some(prev) => {
                 // normalized cross-correlation over [0, search)
@@ -68,8 +72,12 @@ impl Sola {
                 }
                 // In silence the correlation is noise and the offset random-walks,
                 // time-warping the stream. Anchor to the nominal center instead.
-                if total_energy / (self.search as f32 + 1.0) < 1e-4 {
+                let anchored = total_energy / (self.search as f32 + 1.0) < 1e-4;
+                if anchored {
                     best_off = self.search / 2;
+                }
+                if std::env::var_os("VC_SOLA_DEBUG").is_some() {
+                    eprintln!("sola_off {best_off} / {} score {best:.3} anchored {anchored}", self.search);
                 }
 
                 let mut out = tail[best_off..best_off + block].to_vec();

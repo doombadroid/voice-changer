@@ -43,6 +43,10 @@ impl Default for EngineCfg {
 enum Noise<'a> {
     Rng(&'a mut Pcg64),
     Given { rnd: ArrayD<f32>, nsf_noise: ArrayD<f32> },
+    /// Position-locked: noise derived from absolute stream position via a
+    /// counter-based generator, so overlapping windows across hops see
+    /// IDENTICAL noise and SOLA blends near-identical renders.
+    Positioned { seed: u64, feat_frame_offset: u64, out_sample_offset: u64 },
 }
 
 pub struct Engine {
@@ -90,6 +94,23 @@ impl Engine {
         rng: &mut Pcg64,
     ) -> Result<(Vec<f32>, StageTimes)> {
         self.convert_impl(audio16k, pitch_semitones, Noise::Rng(rng))
+    }
+
+    /// Position-locked noise: same absolute stream position -> same noise,
+    /// regardless of window boundaries.
+    pub fn convert_positioned(
+        &mut self,
+        audio16k: &[f32],
+        pitch_semitones: i32,
+        seed: u64,
+        feat_frame_offset: u64,
+        out_sample_offset: u64,
+    ) -> Result<(Vec<f32>, StageTimes)> {
+        self.convert_impl(
+            audio16k,
+            pitch_semitones,
+            Noise::Positioned { seed, feat_frame_offset, out_sample_offset },
+        )
     }
 
     /// Test hook: run with externally supplied rnd/nsf_noise (golden comparison).
@@ -173,6 +194,16 @@ impl Engine {
                 Array3::from_shape_fn((1, tu * self.cfg.upp, 1), |_| standard_normal(rng)).into_dyn(),
             ),
             Noise::Given { rnd, nsf_noise } => (rnd, nsf_noise),
+            Noise::Positioned { seed, feat_frame_offset, out_sample_offset } => (
+                Array3::from_shape_fn((1, 192, tu), |(_, c, t)| {
+                    counter_normal(seed, 1, feat_frame_offset + t as u64, c as u64)
+                })
+                .into_dyn(),
+                Array3::from_shape_fn((1, tu * self.cfg.upp, 1), |(_, i, _)| {
+                    counter_normal(seed, 2, out_sample_offset + i as u64, 0)
+                })
+                .into_dyn(),
+            ),
         };
         let feats_dyn = feats_up.into_dyn();
         let o = self
@@ -213,4 +244,21 @@ fn standard_normal(rng: &mut Pcg64) -> f32 {
 
 pub fn seeded_rng(seed: u64) -> Pcg64 {
     Pcg64::seed_from_u64(seed)
+}
+
+/// Counter-based gaussian: SplitMix64 over (seed, stream, index, lane) ->
+/// Box-Muller. O(1) random access, deterministic, position-stable.
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E3779B97F4A7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x ^ (x >> 31)
+}
+
+fn counter_normal(seed: u64, stream: u64, index: u64, lane: u64) -> f32 {
+    let h = splitmix64(seed ^ stream.wrapping_mul(0xA24BAED4963EE407) ^ index.wrapping_mul(0x9FB21C651E98DF25) ^ lane.wrapping_mul(0xD6E8FEB86659FD93));
+    let h2 = splitmix64(h);
+    let u1 = ((h >> 11) as f64 + 1.0) / (1u64 << 53) as f64; // (0,1]
+    let u2 = (h2 >> 11) as f64 / (1u64 << 53) as f64;
+    (((-2.0 * u1.ln()).sqrt()) * (2.0 * std::f64::consts::PI * u2).cos()) as f32
 }
