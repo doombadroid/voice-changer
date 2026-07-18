@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use vc_core::dsp::resample::Resampler;
 use vc_core::engine::{seeded_rng, Engine, EngineCfg};
+use vc_core::stream::{StreamCfg, StreamEngine};
 
 #[derive(Parser)]
 #[command(about = "vc-native offline converter (M1)")]
@@ -16,6 +17,15 @@ struct Args {
     /// single-pass whole-file conversion (no chunking)
     #[arg(long, default_value_t = false)]
     single_pass: bool,
+    /// chunk block size in 16k samples (multiple of 320)
+    #[arg(long, default_value_t = 2560)]
+    block: usize,
+    /// left context in 16k samples (multiple of 320)
+    #[arg(long, default_value_t = 4160)]
+    ctx_left: usize,
+    /// print per-hop stage timings
+    #[arg(long, default_value_t = false)]
+    bench: bool,
     /// model/asset paths (defaults assume repo root cwd)
     #[arg(long, default_value = "server/pretrain/content_vec_500.onnx")]
     contentvec: String,
@@ -87,6 +97,8 @@ fn main() -> Result<()> {
     };
     let mut eng = Engine::new(cfg)?;
     let mut rng = seeded_rng(args.seed);
+    #[allow(unused_assignments)]
+    let mut write_out_sr = eng.out_sr();
 
     let t0 = std::time::Instant::now();
     let out = if args.single_pass {
@@ -97,15 +109,68 @@ fn main() -> Result<()> {
         );
         out
     } else {
-        // chunked mode lands in M1-T5; until then fall back to single-pass
-        let (out, _) = eng.convert(&a16, args.pitch, &mut rng)?;
+        let _ = &mut rng;
+        let scfg = StreamCfg {
+            block: args.block,
+            ctx_left: args.ctx_left,
+            pitch_semitones: args.pitch,
+            seed: args.seed,
+            ..Default::default()
+        };
+        let block = scfg.block;
+        let mut se = StreamEngine::new(eng, scfg);
+        let mut out: Vec<f32> = Vec::new();
+        let mut hop_times: Vec<f64> = Vec::new();
+        let mut chunks = a16.chunks_exact(block);
+        for c in chunks.by_ref() {
+            let t = std::time::Instant::now();
+            if let Some(mut b) = se.push(c)? {
+                out.append(&mut b);
+            }
+            hop_times.push(t.elapsed().as_secs_f64() * 1e3);
+            if args.bench {
+                let lt = se.last_times;
+                eprintln!(
+                    "hop {:.1} ms (cv {:.1} pitch {:.1} synth {:.1}) vs block {:.0} ms",
+                    hop_times.last().unwrap(),
+                    lt.contentvec,
+                    lt.pitch,
+                    lt.synth,
+                    block as f64 / 16.0
+                );
+            }
+        }
+        // final partial chunk: zero-pad to a full block so tail audio isn't dropped
+        let rem = chunks.remainder();
+        if !rem.is_empty() {
+            let mut last = rem.to_vec();
+            last.resize(block, 0.0);
+            if let Some(mut b) = se.push(&last)? {
+                out.append(&mut b);
+            }
+        }
+        hop_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if !hop_times.is_empty() {
+            let p50 = hop_times[hop_times.len() / 2];
+            let p95 = hop_times[((hop_times.len() as f64 * 0.95) as usize).min(hop_times.len() - 1)];
+            let budget = block as f64 / 16.0;
+            eprintln!(
+                "hops: {}  p50 {:.1} ms  p95 {:.1} ms  block-budget {:.0} ms  headroom {:.0}%",
+                hop_times.len(),
+                p50,
+                p95,
+                budget,
+                (1.0 - p50 / budget) * 100.0
+            );
+        }
+        write_out_sr = se.out_sr();
         out
     };
     let wall = t0.elapsed().as_secs_f64();
     let audio_secs = a16.len() as f64 / 16000.0;
     eprintln!("xRT: {:.2} ({}s audio in {:.2}s)", audio_secs / wall, audio_secs as i64, wall);
 
-    write_wav(&args.output, &out, eng.out_sr())?;
-    eprintln!("out: {} samples @ {} Hz -> {}", out.len(), eng.out_sr(), args.output);
+    write_wav(&args.output, &out, write_out_sr)?;
+    eprintln!("out: {} samples @ {} Hz -> {}", out.len(), write_out_sr, args.output);
     Ok(())
 }
