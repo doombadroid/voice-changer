@@ -1,12 +1,20 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod virtmic;
+
 #[derive(Parser)]
 #[command(about = "vc-native live voice changer (M2)")]
 struct Args {
     /// enumerate pipewire audio nodes and exit
     #[arg(long, default_value_t = false)]
     probe: bool,
+    /// create the virtual mic, hold until Ctrl-C (lifecycle test)
+    #[arg(long, default_value_t = false)]
+    hold_mic: bool,
+    /// virtual mic node name
+    #[arg(long, default_value = "vc_mic")]
+    mic_name: String,
 }
 
 fn probe() -> Result<()> {
@@ -54,6 +62,14 @@ fn main() -> Result<()> {
     pipewire::init();
     if args.probe {
         probe()?;
+    }
+    if args.hold_mic {
+        virtmic::install_guards();
+        let _mic = virtmic::VirtMic::create(&args.mic_name)?;
+        eprintln!("virtual mic '{}' up; Ctrl-C to exit", args.mic_name);
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
     }
     unsafe { pipewire::deinit() };
     Ok(())
