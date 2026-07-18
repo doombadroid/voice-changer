@@ -68,6 +68,8 @@ pub fn install_guards() {
     std::panic::set_hook(Box::new(move |info| {
         teardown();
         default_hook(info);
+        // a dead worker with a live main loop = zombie daemon; die loudly
+        std::process::exit(101);
     }));
     let _ = ctrlc::set_handler(|| {
         teardown();

@@ -47,6 +47,27 @@ struct Args {
     tone: bool,
 }
 
+/// Find the repo root (dir containing server/pretrain + native/) from cwd or
+/// walking up from the executable path, so vc-live runs from anywhere.
+fn find_repo_root() -> Option<std::path::PathBuf> {
+    let is_root = |p: &std::path::Path| p.join("server/pretrain/content_vec_500.onnx").exists();
+    if let Ok(cwd) = std::env::current_dir() {
+        if is_root(&cwd) {
+            return Some(cwd);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut d = exe.parent().map(|p| p.to_path_buf());
+        while let Some(p) = d {
+            if is_root(&p) {
+                return Some(p);
+            }
+            d = p.parent().map(|q| q.to_path_buf());
+        }
+    }
+    None
+}
+
 fn probe() -> Result<()> {
     let mainloop = pipewire::main_loop::MainLoopRc::new(None)?;
     let context = pipewire::context::ContextRc::new(&mainloop, None)?;
@@ -106,6 +127,34 @@ fn main() -> Result<()> {
         }
     }
 
+    // build engine FIRST (before touching audio graph) so path errors are
+    // clean failures, not a mic-teardown cascade mid-panic
+    let engine_stream = if args.passthrough {
+        None
+    } else {
+        let root = find_repo_root()
+            .ok_or_else(|| anyhow::anyhow!("cannot locate repo root (server/pretrain/...) from cwd or exe path"))?;
+        let j = |p: &str| root.join(p).to_string_lossy().to_string();
+        let ecfg = vc_core::engine::EngineCfg {
+            contentvec_onnx: j("server/pretrain/content_vec_500.onnx"),
+            fcpe_onnx: j("native/golden/fcpe_fp32.onnx"),
+            synth_onnx: j("native/golden/synth_alexjones_fp32.onnx"),
+            frontend_npz: j("native/golden/fcpe_frontend.npz"),
+            ..Default::default()
+        };
+        let eng = vc_core::engine::Engine::new(ecfg)?;
+        let cfg = vc_core::stream::StreamCfg {
+            block: args.block,
+            ctx_left: args.ctx_left,
+            crossfade: args.crossfade,
+            sola_search: 320,
+            lookahead: args.lookahead,
+            pitch_semitones: args.pitch,
+            seed: args.seed,
+        };
+        Some(vc_core::stream::StreamEngine::new(eng, cfg))
+    };
+
     // rings: 4 s of 16k input, 4 s of 40k output
     let (cap_tx, mut cap_rx) = rtrb::RingBuffer::<f32>::new(64000);
     let (mut out_tx, out_rx) = rtrb::RingBuffer::<f32>::new(160000);
@@ -116,25 +165,8 @@ fn main() -> Result<()> {
     let block = args.block;
     let passthrough = args.passthrough;
     let tone = args.tone;
-    let (pitch, seed, ctx_left, crossfade, lookahead) =
-        (args.pitch, args.seed, args.ctx_left, args.crossfade, args.lookahead);
     std::thread::spawn(move || {
-        let mut engine_stream = if passthrough {
-            None
-        } else {
-            let eng = vc_core::engine::Engine::new(vc_core::engine::EngineCfg::default())
-                .expect("engine init (run from repo root - model paths)");
-            let cfg = vc_core::stream::StreamCfg {
-                block,
-                ctx_left,
-                crossfade,
-                sola_search: 320,
-                lookahead,
-                pitch_semitones: pitch,
-                seed,
-            };
-            Some(vc_core::stream::StreamEngine::new(eng, cfg))
-        };
+        let mut engine_stream = engine_stream;
         eprintln!("worker up ({})", if passthrough { "passthrough" } else { "engine" });
 
         let mut inbuf: Vec<f32> = Vec::with_capacity(block);
@@ -239,8 +271,16 @@ fn main() -> Result<()> {
     let core = context.connect_rc(None)?;
     let cap_target = args.input.clone().or_else(virtmic::pick_hw_source);
     eprintln!("capture from: {}", cap_target.as_deref().unwrap_or("(default)"));
+    // freshly-created node can lag pw-dump; retry briefly
+    let mut play_id = None;
+    for _ in 0..10 {
+        play_id = virtmic::node_id(&args.mic_name);
+        if play_id.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     let play_target = virtmic::node_serial(&args.mic_name).unwrap_or_else(|| args.mic_name.clone());
-    let play_id = virtmic::node_id(&args.mic_name);
     eprintln!("playback target serial: {play_target} id: {play_id:?}");
     let _cap = audio::capture_stream(&core, cap_target.as_deref(), cap_tx)?;
     let _play = audio::playback_stream(&core, &play_target, play_id, 40000, out_rx, warm)?;
