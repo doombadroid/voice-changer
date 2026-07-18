@@ -138,6 +138,7 @@ fn main() -> Result<()> {
         eprintln!("worker up ({})", if passthrough { "passthrough" } else { "engine" });
 
         let mut inbuf: Vec<f32> = Vec::with_capacity(block);
+        let mut burst_t: Option<std::time::Instant> = None;
         let mut total_in: u64 = 0;
         let mut in_rms_acc: f32 = 0.0;
         let mut misses = 0u64;
@@ -159,7 +160,7 @@ fn main() -> Result<()> {
                     let phase_in_period = abs % 32000;
                     *v = if phase_in_period < 1600 {
                         if phase_in_period == 0 {
-                            eprintln!("TONE_BURST_AT {:.6}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64());
+                            burst_t = Some(std::time::Instant::now());
                         }
                         0.5 * (2.0 * std::f32::consts::PI * 1000.0 * (phase_in_period as f32) / 16000.0).sin()
                     } else {
@@ -191,6 +192,14 @@ fn main() -> Result<()> {
                     })
                     .collect()
             };
+            // internal latency: burst injection -> converted energy in output
+            if let Some(bt) = burst_t {
+                let orms = if out.is_empty() { 0.0 } else { (out.iter().map(|v| v * v).sum::<f32>() / out.len() as f32).sqrt() };
+                if orms > 0.02 {
+                    eprintln!("INTERNAL_LATENCY_MS {:.0}", bt.elapsed().as_secs_f64() * 1e3);
+                    burst_t = None;
+                }
+            }
             let ms = t0.elapsed().as_secs_f64() * 1e3;
             hops += 1;
             hop_ms.push(ms);
