@@ -1,0 +1,14 @@
+[package]
+name = "vc-core"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+ort = { version = "2.0.0-rc.12", features = ["webgpu", "ndarray"] }
+rubato = "0.16"
+realfft = "3"
+ndarray = "0.17"
+ndarray-npy = "0.10"
+anyhow = "1"
+rand = "0.9"
+rand_pcg = "0.9"
